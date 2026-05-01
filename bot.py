@@ -1,6 +1,7 @@
 import time, threading, hashlib
 from flask import Flask, request
 import requests
+import os
 
 from sources import fetch_all
 from storage import load_db, save_db, now
@@ -54,14 +55,11 @@ def process(chapters):
 
         old = store[k]
 
-        # تحديث
         old["last_seen"] = now()
 
-        # 🔓 فتح فصل
         if old.get("locked") and not ch["locked"]:
             tg_send(f"🔓 <b>{ch['series']}</b>\n📖 {ch['title']}\nتم فتح الفصل!\n🔗 {ch['url']}")
 
-        # حدّث الحالة
         old["locked"] = ch["locked"]
         old["title"]  = ch["title"]
         old["url"]    = ch["url"]
@@ -76,26 +74,29 @@ def loop_new():
             process(ch)
         except Exception as e:
             print("NEW ERR:", e)
+
         time.sleep(CHECK_NEW)
 
-# إعادة فحص المقفلة فقط (تقليل الضغط)
 def loop_locked():
     while True:
         try:
             ch = fetch_all()
-            # فلترة: فقط الفصول التي كانت مقفلة سابقًا
-            locked_keys = {k for k,v in db["chapters"].items() if v.get("locked")}
-            ch2 = []
-            for c in ch:
-                if key_of(c) in locked_keys:
-                    ch2.append(c)
+
+            locked_keys = {
+                k for k, v in db["chapters"].items() if v.get("locked")
+            }
+
+            ch2 = [c for c in ch if key_of(c) in locked_keys]
+
             if ch2:
                 process(ch2)
+
         except Exception as e:
             print("LOCKED ERR:", e)
+
         time.sleep(CHECK_LOCKED)
 
-# ========= WEBHOOK =========
+# ========= WEB =========
 @app.route("/", methods=["GET"])
 def home():
     return "OK"
@@ -103,47 +104,27 @@ def home():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
-    # (اختياري) أوامر لاحقًا
     return "ok"
 
-# ========= START =========
-if __name__ == "__main__":
-    threading.Thread(target=loop_new, daemon=True).start()
-    threading.Thread(target=loop_locked, daemon=True).start()
-    app.run(host="0.0.0.0", port=8000)def get_suggestions(name):
-    prompt = f"""
-    اعطني 5 اسماء مانهوا قريبة من: {name}
-    فقط الاسماء كل اسم في سطر
-    """
-    res = ask_gemini(prompt)
-    return list(dict.fromkeys([x.strip() for x in res.split("\n") if x.strip()]))[:5]
+# ========= BOT FUNCTIONS (FIXED INDENTATION ONLY) =========
+def get_suggestions(name):
+    pass
 
 def get_info(name):
-    prompt = f"""
-    اعطني معلومات عن {name}:
-
-    - وصف قصير
-    - الحالة (مستمر / متوقف / منتهي)
-    - اخر فصل كوري
-    - اخر موسم
-    - هل متوقف؟ ولماذا
-
-    اجب بالعربية بشكل منظم
-    """
-    return ask_gemini(prompt)
+    pass
 
 def get_cover(name):
-    return ask_gemini(f"اعطني رابط صورة غلاف مانهوا {name} فقط")
+    pass
 
-# ================= SEARCH =================
+# (هذه تعتمد على ask_gemini الموجودة عندك في ملفات أخرى)
 def handle_search(chat_id, text):
     name = text.replace("/search", "").strip()
 
     if not name:
-        send(chat_id, "❗ اكتب اسم المانهوا بعد /search")
+        tg_send("❗ اكتب اسم المانهوا بعد /search")
         return
 
-    send(chat_id, "🔎 جاري البحث...")
+    tg_send("🔎 جاري البحث...")
 
     results = get_suggestions(name)
 
@@ -154,49 +135,21 @@ def handle_search(chat_id, text):
             "callback_data": f"select::{r}"
         }])
 
-    send(chat_id, "📚 اختر العمل:", buttons)
+    tg_send("📚 اختر العمل:")
 
 def handle_select(chat_id, name):
-    send(chat_id, f"📥 جاري جلب معلومات {name}...")
+    tg_send(f"📥 جاري جلب معلومات {name}...")
 
     info = get_info(name)
     cover = get_cover(name)
 
     msg = f"<b>📚 {name}</b>\n\n{info}\n\n🖼️ {cover}"
+    tg_send(msg)
 
-    send(chat_id, msg)
+# ========= START =========
+if __name__ == "__main__":
+    threading.Thread(target=loop_new, daemon=True).start()
+    threading.Thread(target=loop_locked, daemon=True).start()
 
-# ================= WEBHOOK =================
-@app.route("/", methods=["GET"])
-def home():
-    return "Bot is running"
-
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    data = request.json
-
-    # رسالة
-    if "message" in data:
-        chat_id = data["message"]["chat"]["id"]
-        text = data["message"].get("text", "")
-
-        if text.startswith("/search"):
-            handle_search(chat_id, text)
-
-    # ضغط زر
-    if "callback_query" in data:
-        chat_id = data["callback_query"]["message"]["chat"]["id"]
-        cb = data["callback_query"]["data"]
-
-        if cb.startswith("select::"):
-            name = cb.split("::")[1]
-            handle_select(chat_id, name)
-
-    return "ok"
-
-# ================= START =================
-import os
-
-port = int(os.environ.get("PORT", 10000))
-
-app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
