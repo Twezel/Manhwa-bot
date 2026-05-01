@@ -195,6 +195,6 @@ def webhook():
     return "ok"
 
 # ================= START =================
-app.run(host="0.0.0.0", port=8000)
+int(os.environ.get("PORT", 10000))
 
-def get_suggestions(name):
+app.run(host="0.0.0.0", port=port)
