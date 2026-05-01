@@ -195,5 +195,11 @@ def webhook():
     return "ok"
 
 # ================= START =================
+def get_suggestions(name):
+    pass
+
+def get_info(name):
+    pass
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
