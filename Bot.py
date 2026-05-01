@@ -1,40 +1,116 @@
-import requests
+import time, threading, hashlib
 from flask import Flask, request
-import google.generativeai as genai
+import requests
 
-# ================= CONFIG =================
+from sources import fetch_all
+from storage import load_db, save_db, now
+from utils import sleep_jitter
+
+# ========= CONFIG =========
 BOT_TOKEN = "8764498926:AAFbn6g676haDMqXZPAIHipiAsSdH0Ky94U"
-GEMINI_KEY = "AIzaSyDoRtPqoOmzSQ2T91jzxdD7YUAdiYhy3kE"
+CHAT_ID   = "8309836593"
 
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+CHECK_NEW = 300      # فصول جديدة كل 5 دقائق
+CHECK_LOCKED = 900   # إعادة فحص المقفلة كل 15 دقيقة
 
 app = Flask(__name__)
+db = load_db()
 
-# ================= TELEGRAM =================
-def send(chat_id, text, buttons=None):
-    url = f"https://api.telegram.org/bot{8764498926:AAFbn6g676haDMqXZPAIHipiAsSdH0Ky94U}/sendMessage"
-
-    payload = {
-        "chat_id": chat_id,
+# ========= TELEGRAM =========
+def tg_send(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, json={
+        "chat_id": CHAT_ID,
         "text": text,
-        "parse_mode": "HTML"
-    }
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False
+    })
 
-    if buttons:
-        payload["reply_markup"] = {"inline_keyboard": buttons}
+# ========= KEYS =========
+def key_of(ch):
+    raw = f"{ch['site']}::{ch['series']}::{ch['chapter_num']}"
+    return hashlib.md5(raw.encode()).hexdigest()
 
-    requests.post(url, json=payload)
+# ========= LOGIC =========
+def process(chapters):
+    global db
+    store = db["chapters"]
 
-# ================= GEMINI =================
-def ask_gemini(prompt):
-    try:
-        res = model.generate_content(prompt)
-        return res.text
-    except:
-        return "❌ فشل في جلب المعلومات"
+    for ch in chapters:
+        k = key_of(ch)
 
-def get_suggestions(name):
+        if k not in store:
+            store[k] = {
+                "site": ch["site"],
+                "series": ch["series"],
+                "title": ch["title"],
+                "url": ch["url"],
+                "locked": ch["locked"],
+                "first_seen": now(),
+                "last_seen": now()
+            }
+            tg_send(f"🆕 <b>{ch['series']}</b>\n📖 {ch['title']}\n🔗 {ch['url']}")
+            continue
+
+        old = store[k]
+
+        # تحديث
+        old["last_seen"] = now()
+
+        # 🔓 فتح فصل
+        if old.get("locked") and not ch["locked"]:
+            tg_send(f"🔓 <b>{ch['series']}</b>\n📖 {ch['title']}\nتم فتح الفصل!\n🔗 {ch['url']}")
+
+        # حدّث الحالة
+        old["locked"] = ch["locked"]
+        old["title"]  = ch["title"]
+        old["url"]    = ch["url"]
+
+    save_db(db)
+
+# ========= LOOPS =========
+def loop_new():
+    while True:
+        try:
+            ch = fetch_all()
+            process(ch)
+        except Exception as e:
+            print("NEW ERR:", e)
+        time.sleep(CHECK_NEW)
+
+# إعادة فحص المقفلة فقط (تقليل الضغط)
+def loop_locked():
+    while True:
+        try:
+            ch = fetch_all()
+            # فلترة: فقط الفصول التي كانت مقفلة سابقًا
+            locked_keys = {k for k,v in db["chapters"].items() if v.get("locked")}
+            ch2 = []
+            for c in ch:
+                if key_of(c) in locked_keys:
+                    ch2.append(c)
+            if ch2:
+                process(ch2)
+        except Exception as e:
+            print("LOCKED ERR:", e)
+        time.sleep(CHECK_LOCKED)
+
+# ========= WEBHOOK =========
+@app.route("/", methods=["GET"])
+def home():
+    return "OK"
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.json
+    # (اختياري) أوامر لاحقًا
+    return "ok"
+
+# ========= START =========
+if __name__ == "__main__":
+    threading.Thread(target=loop_new, daemon=True).start()
+    threading.Thread(target=loop_locked, daemon=True).start()
+    app.run(host="0.0.0.0", port=8000)def get_suggestions(name):
     prompt = f"""
     اعطني 5 اسماء مانهوا قريبة من: {name}
     فقط الاسماء كل اسم في سطر
